@@ -176,4 +176,3 @@ if file:
 
     if parametr == "Skrobia uszkodzona" and data[parametr].mean() > 25:
         st.warning("Wysoka skrobia → kleistość miękiszu")
-``
