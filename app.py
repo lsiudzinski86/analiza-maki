@@ -52,20 +52,15 @@ if file:
     df = df[(df["DATA"] >= pd.to_datetime(date_range[0])) &
             (df["DATA"] <= pd.to_datetime(date_range[1]))]
 
-    # ===== AUTOMATYCZNE PARAMETRY =====
+    # ===== PARAMETRY =====
 
     numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-
-    # usuwamy kolumny techniczne
     excluded = ["Lp."]
     parametry = [col for col in numeric_cols if col not in excluded]
 
     parametr = st.selectbox("Wybierz parametr", parametry)
 
-    # ===== WYBÓR TYP =====
-
     typ = st.radio("Wybierz typ danych:", ["MŁYN", "BLEND"])
-
     data = df[df["TYP"] == typ]
 
     # ===== TREND =====
@@ -74,11 +69,11 @@ if file:
 
     weekly = (
         data.groupby(["TYDZIEŃ", "PREFIX"])[parametr]
-        .agg(["mean", "std"])
+        .mean()
         .reset_index()
     )
 
-    st.line_chart(weekly.pivot(index="TYDZIEŃ", columns="PREFIX", values="mean"))
+    st.line_chart(weekly.pivot(index="TYDZIEŃ", columns="PREFIX", values=parametr))
 
     # ===== STABILNOŚĆ =====
 
@@ -91,20 +86,44 @@ if file:
     )
 
     stats["CV %"] = stats["std"] / stats["mean"] * 100
-
     st.dataframe(stats)
 
-    # ===== SPECYFIKACJA WIELOPARAMETROWA =====
+    # ===== SPECYFIKACJA =====
 
-    st.subheader("⚙️ Specyfikacja dostawcy")
+    st.subheader("⚙️ Specyfikacja dostawców")
 
-    spec_df = pd.DataFrame({
-        "Parametr": parametry,
-        "Min": [None]*len(parametry),
-        "Max": [None]*len(parametry)
+    unique_prefix = sorted(data["PREFIX"].unique())
+
+    default_spec = pd.DataFrame({
+        "Młyn": np.repeat(unique_prefix, len(parametry)),
+        "Parametr": parametry * len(unique_prefix),
+        "Min": [None]*(len(unique_prefix)*len(parametry)),
+        "Max": [None]*(len(unique_prefix)*len(parametry))
     })
 
-    edited_spec = st.data_editor(spec_df, num_rows="fixed")
+    # ===== Wczytanie specyfikacji =====
+
+    uploaded_spec = st.file_uploader("📂 Wczytaj specyfikację", type=["csv"])
+
+    if uploaded_spec:
+        spec_df = pd.read_csv(uploaded_spec)
+    else:
+        spec_df = default_spec
+
+    edited_spec = st.data_editor(spec_df, num_rows="dynamic")
+
+    # ===== ZAPIS =====
+
+    st.subheader("💾 Zapis specyfikacji")
+
+    csv = edited_spec.to_csv(index=False).encode("utf-8")
+
+    st.download_button(
+        label="💾 Pobierz specyfikację",
+        data=csv,
+        file_name="specyfikacja.csv",
+        mime="text/csv"
+    )
 
     # ===== WALIDACJA =====
 
@@ -113,47 +132,50 @@ if file:
     results = []
 
     for _, row in edited_spec.iterrows():
-        param = row["Parametr"]
-        min_val = row["Min"]
-        max_val = row["Max"]
+        mill = row.get("Młyn")
+        param = row.get("Parametr")
+        min_val = row.get("Min")
+        max_val = row.get("Max")
 
         if pd.notna(min_val) and pd.notna(max_val):
 
-            temp = data.copy()
-            temp["STATUS"] = temp[param].apply(
-                lambda x: "OK" if min_val <= x <= max_val else "POZA"
-            )
+            temp = data[data["PREFIX"] == mill]
 
-            poza = (temp["STATUS"] == "POZA").sum()
-            total = len(temp)
+            if param in temp.columns and not temp.empty:
 
-            results.append({
-                "Parametr": param,
-                "% poza spec": round(poza / total * 100, 1) if total > 0 else 0
-            })
+                poza = ((temp[param] < min_val) | (temp[param] > max_val)).sum()
+                total = len(temp)
+
+                results.append({
+                    "Młyn": mill,
+                    "Parametr": param,
+                    "% poza spec": round(poza / total * 100, 1)
+                })
 
     if results:
         st.dataframe(pd.DataFrame(results))
 
-    # ===== ALERTY =====
+    # ===== ALARMY =====
 
     st.subheader("🚨 Alarmy")
 
     alerts_list = []
 
     for _, row in edited_spec.iterrows():
-        param = row["Parametr"]
-        min_val = row["Min"]
-        max_val = row["Max"]
+        mill = row.get("Młyn")
+        param = row.get("Parametr")
+        min_val = row.get("Min")
+        max_val = row.get("Max")
 
         if pd.notna(min_val) and pd.notna(max_val):
 
             temp = data[
-                (data[param] < min_val) | (data[param] > max_val)
+                (data["PREFIX"] == mill) &
+                ((data[param] < min_val) | (data[param] > max_val))
             ]
 
             if not temp.empty:
-                temp = temp[["PREFIX", "DATA", param]]
+                temp = temp[["PREFIX", "DATA", param]].copy()
                 temp["Parametr"] = param
                 alerts_list.append(temp)
 
@@ -166,13 +188,13 @@ if file:
     st.subheader("🧠 Interpretacja technologiczna")
 
     if parametr == "W" and data[parametr].mean() < 250:
-        st.warning("Niskie W → ryzyko słabej objętości i struktury")
+        st.warning("Niskie W → ryzyko słabej objętości i objętości pieczywa")
 
     if parametr == "P/L" and data[parametr].mean() > 1:
-        st.warning("Wysokie P/L → ciasto sztywne")
+        st.warning("Wysokie P/L → ciasto sztywne, trudne w obróbce")
 
     if parametr == "Białko" and data[parametr].mean() < 11:
         st.warning("Niskie białko → słaba struktura glutenu")
 
     if parametr == "Skrobia uszkodzona" and data[parametr].mean() > 25:
-        st.warning("Wysoka skrobia → kleistość miękiszu")
+        st.warning("Wysoka skrobia → ryzyko kleistości miękiszu")
