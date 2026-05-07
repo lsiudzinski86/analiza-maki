@@ -6,13 +6,15 @@ st.set_page_config(page_title="Analiza Mąki", layout="wide")
 
 st.title("📊 Monitoring jakości mąki")
 
-file = st.file_uploader("Wgraj plik Excel", type=["xlsx"])
+# ========= WCZYTANIE DANYCH =========
+
+file = st.file_uploader("Wgraj plik Excel z wynikami", type=["xlsx"])
 
 if file:
 
     df = pd.read_excel(file)
 
-    # ===== PARSOWANIE =====
+    # ========= PARSOWANIE =========
 
     def get_prefix(name):
         if pd.isna(name):
@@ -34,10 +36,10 @@ if file:
 
     df["TYP"] = df["PREFIX"].apply(classify)
 
-    df["DATA"] = pd.to_datetime(df["Data badania Excel"])
+    df["DATA"] = pd.to_datetime(df["Data badania Excel"], errors="coerce")
     df["TYDZIEŃ"] = df["DATA"].dt.to_period("W").astype(str)
 
-    # ===== FILTR DATY =====
+    # ========= FILTR DATY =========
 
     st.sidebar.header("📅 Zakres dat")
 
@@ -49,10 +51,13 @@ if file:
         [min_date, max_date]
     )
 
-    df = df[(df["DATA"] >= pd.to_datetime(date_range[0])) &
-            (df["DATA"] <= pd.to_datetime(date_range[1]))]
+    if len(date_range) == 2:
+        df = df[
+            (df["DATA"] >= pd.to_datetime(date_range[0])) &
+            (df["DATA"] <= pd.to_datetime(date_range[1]))
+        ]
 
-    # ===== PARAMETRY =====
+    # ========= PARAMETRY =========
 
     numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
     excluded = ["Lp."]
@@ -63,7 +68,7 @@ if file:
     typ = st.radio("Wybierz typ danych:", ["MŁYN", "BLEND"])
     data = df[df["TYP"] == typ]
 
-    # ===== TREND =====
+    # ========= TREND =========
 
     st.subheader("📈 Trend tygodniowy")
 
@@ -73,26 +78,31 @@ if file:
         .reset_index()
     )
 
-    st.line_chart(weekly.pivot(index="TYDZIEŃ", columns="PREFIX", values=parametr))
+    if not weekly.empty:
+        st.line_chart(
+            weekly.pivot(index="TYDZIEŃ", columns="PREFIX", values=parametr)
+        )
 
-    # ===== STABILNOŚĆ =====
+    # ========= STABILNOŚĆ =========
 
     st.subheader("📊 Stabilność")
 
-    stats = (
-        data.groupby("PREFIX")[parametr]
-        .agg(["mean", "std"])
-        .reset_index()
-    )
+    if not data.empty:
 
-    stats["CV %"] = stats["std"] / stats["mean"] * 100
-    st.dataframe(stats)
+        stats = (
+            data.groupby("PREFIX")[parametr]
+            .agg(["mean", "std"])
+            .reset_index()
+        )
 
-    # ===== SPECYFIKACJA =====
+        stats["CV %"] = stats["std"] / stats["mean"] * 100
+        st.dataframe(stats)
+
+    # ========= SPECYFIKACJA =========
 
     st.subheader("⚙️ Specyfikacja dostawców")
 
-    unique_prefix = sorted(data["PREFIX"].unique())
+    unique_prefix = sorted(data["PREFIX"].dropna().unique())
 
     default_spec = pd.DataFrame({
         "Młyn": np.repeat(unique_prefix, len(parametry)),
@@ -101,31 +111,65 @@ if file:
         "Max": [None]*(len(unique_prefix)*len(parametry))
     })
 
-    # ===== Wczytanie specyfikacji =====
+    # ========= WCZYTYWANIE SPECYFIKACJI =========
 
-    uploaded_spec = st.file_uploader("📂 Wczytaj specyfikację", type=["csv"])
+    uploaded_spec = st.file_uploader(
+        "📂 Wczytaj specyfikację (CSV lub Excel)",
+        type=["csv", "xlsx"]
+    )
 
     if uploaded_spec:
-        spec_df = pd.read_csv(uploaded_spec)
+
+        if uploaded_spec.name.endswith(".xlsx"):
+            spec_df = pd.read_excel(uploaded_spec)
+
+        else:
+            try:
+                spec_df = pd.read_csv(uploaded_spec, sep=";")
+            except:
+                spec_df = pd.read_csv(uploaded_spec, sep=",")
+
+        # czyszczenie typów
+        spec_df["Min"] = pd.to_numeric(spec_df["Min"], errors="coerce")
+        spec_df["Max"] = pd.to_numeric(spec_df["Max"], errors="coerce")
+
     else:
         spec_df = default_spec
 
+    # ========= EDYTOR =========
+
     edited_spec = st.data_editor(spec_df, num_rows="dynamic")
 
-    # ===== ZAPIS =====
+    # ========= ZAPIS =========
 
     st.subheader("💾 Zapis specyfikacji")
 
+    col1, col2 = st.columns(2)
+
+    # CSV
     csv = edited_spec.to_csv(index=False).encode("utf-8")
 
-    st.download_button(
-        label="💾 Pobierz specyfikację",
+    col1.download_button(
+        label="💾 Pobierz CSV",
         data=csv,
         file_name="specyfikacja.csv",
         mime="text/csv"
     )
 
-    # ===== WALIDACJA =====
+    # Excel
+    from io import BytesIO
+    buffer = BytesIO()
+    edited_spec.to_excel(buffer, index=False)
+    buffer.seek(0)
+
+    col2.download_button(
+        label="💾 Pobierz Excel",
+        data=buffer,
+        file_name="specyfikacja.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    # ========= WALIDACJA =========
 
     st.subheader("✅ Walidacja")
 
@@ -155,7 +199,7 @@ if file:
     if results:
         st.dataframe(pd.DataFrame(results))
 
-    # ===== ALARMY =====
+    # ========= ALARMY =========
 
     st.subheader("🚨 Alarmy")
 
@@ -183,18 +227,18 @@ if file:
         alerts = pd.concat(alerts_list)
         st.dataframe(alerts)
 
-    # ===== INTERPRETACJA =====
+    # ========= INTERPRETACJA =========
 
     st.subheader("🧠 Interpretacja technologiczna")
 
     if parametr == "W" and data[parametr].mean() < 250:
-        st.warning("Niskie W → ryzyko słabej objętości i objętości pieczywa")
+        st.warning("Niskie W → ryzyko słabej objętości")
 
     if parametr == "P/L" and data[parametr].mean() > 1:
-        st.warning("Wysokie P/L → ciasto sztywne, trudne w obróbce")
+        st.warning("Wysokie P/L → ciasto sztywne")
 
     if parametr == "Białko" and data[parametr].mean() < 11:
         st.warning("Niskie białko → słaba struktura glutenu")
 
     if parametr == "Skrobia uszkodzona" and data[parametr].mean() > 25:
-        st.warning("Wysoka skrobia → ryzyko kleistości miękiszu")
+        st.warning("Wysoka skrobia → kleistość miękiszu")
