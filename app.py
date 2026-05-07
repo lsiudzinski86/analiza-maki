@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from io import BytesIO
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 st.set_page_config(page_title="Analiza Mąki", layout="wide")
 
@@ -50,135 +51,113 @@ if file:
     numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
     parametry = [c for c in numeric_cols if c != "Lp."]
 
-    parametr = st.selectbox("Parametr główny", parametry)
+    parametr = st.selectbox("Wybierz parametr", parametry)
+    typ = st.radio("Typ danych:", ["MŁYN", "BLEND"])
+
+    data = df[df["TYP"] == typ]
 
     # ===== TREND =====
-    st.subheader("📈 Trend")
+    st.subheader("📈 Trend tygodniowy")
 
-    trend_df = df.groupby("TYDZIEŃ")[parametr].mean().reset_index()
+    weekly = (
+        data.groupby(["TYDZIEŃ"])[parametr]
+        .mean()
+        .reset_index()
+    )
 
-    if not trend_df.empty:
-        st.line_chart(trend_df.set_index("TYDZIEŃ"))
+    if not weekly.empty:
+        st.line_chart(weekly.set_index("TYDZIEŃ"))
 
     # ===== STABILNOŚĆ =====
     st.subheader("📊 Stabilność")
 
-    stats = df.groupby("PREFIX")[parametr].agg(["mean", "std"]).reset_index()
+    stats = data.groupby("PREFIX")[parametr].agg(["mean", "std"]).reset_index()
     stats["CV %"] = stats["std"] / stats["mean"] * 100
     st.dataframe(stats)
 
     # =============================
-    # ✅ SPECYFIKACJA – WRACA
+    # 🔥 KORELACJA
     # =============================
+    st.subheader("🧠 Korelacja parametrów")
 
-    st.subheader("⚙️ Specyfikacja")
+    corr = df[parametry].apply(pd.to_numeric, errors='coerce').corr()
 
-    spec_df = pd.DataFrame({
-        "Młyn": df["PREFIX"].unique(),
-        "Min": [None]*len(df["PREFIX"].unique()),
-        "Max": [None]*len(df["PREFIX"].unique())
-    })
-
-    edited_spec = st.data_editor(spec_df)
-
-    st.subheader("✅ Walidacja")
-
-    results = []
-
-    for _, row in edited_spec.iterrows():
-        mill = row["Młyn"]
-        min_val = row["Min"]
-        max_val = row["Max"]
-
-        if pd.notna(min_val) and pd.notna(max_val):
-
-            temp = df[df["PREFIX"] == mill]
-
-            poza = ((temp[parametr] < min_val) | (temp[parametr] > max_val)).sum()
-            total = len(temp)
-
-            results.append({
-                "Młyn": mill,
-                "% poza spec": round(poza / total * 100, 1)
-            })
-
-    if results:
-        st.dataframe(pd.DataFrame(results))
+    fig, ax = plt.subplots(figsize=(8,6))
+    sns.heatmap(corr, cmap="coolwarm", center=0)
+    st.pyplot(fig)
 
     # =============================
-    # 🔥 REKOMENDACJA BLENDU
+    # 🔥 PREDYKCJA
     # =============================
+    st.subheader("🔮 Predykcja problemów")
 
-    st.subheader("⚙️ Rekomendacja blendu")
+    if len(weekly) > 3:
 
-    blend_df = df[df["TYP"] == "BLEND"]
-    mill_df = df[df["TYP"] == "MŁYN"]
+        y = weekly[parametr].values
 
-    if not blend_df.empty and not mill_df.empty:
-
-        blend_mean = blend_df[parametr].mean()
-
-        mill_avg = mill_df.groupby("PREFIX")[parametr].mean().reset_index()
-        mill_avg["Różnica"] = mill_avg[parametr] - blend_mean
-
-        st.dataframe(mill_avg)
-
-        for _, row in mill_avg.iterrows():
-            if row["Różnica"] > 0:
-                st.success(f"{row['PREFIX']} podnosi {parametr}")
-            else:
-                st.warning(f"{row['PREFIX']} obniża {parametr}")
-
-    # =============================
-    # 🔮 PREDYKCJA
-    # =============================
-
-    st.subheader("🔮 Predykcja")
-
-    if len(trend_df) > 3:
-
-        y = trend_df[parametr].values
+        # prosty trend
         trend = np.polyfit(range(len(y)), y, 1)[0]
 
+        current = y[-1]
+        previous = y[-3]
+
+        change = current - previous
+
+        st.write(f"Trend: {round(trend,4)}")
+
+        # ===== REGUŁY =====
+
         if trend < 0:
-            st.warning("Trend spadkowy – możliwe pogorszenie jakości")
-        else:
-            st.info("Trend stabilny/wzrostowy")
+            st.warning(f"📉 Trend spadkowy ({parametr}) – możliwe pogorszenie jakości")
+
+        if trend > 0:
+            st.info(f"📈 Trend wzrostowy ({parametr})")
+
+        if abs(change) > 0.1 * np.mean(y):
+            st.warning("⚠️ Szybka zmiana parametru – ryzyko destabilizacji")
+
+        # konkretne przypadki
+        if parametr.lower() == "w" and trend < 0:
+            st.error("🔥 Spadek W → ryzyko utraty objętości pieczywa")
+
+        if parametr.lower() == "p/l" and trend > 0:
+            st.error("🔥 Wzrost P/L → ryzyko problemów z laminacją")
 
     # =============================
-    # ✅ PROSTA KORELACJA (NOWA)
+    # 🔥 NOWA INTERPRETACJA
     # =============================
-
-    st.subheader("🧠 Zależności między parametrami")
-
-    corr = df[parametry].corr()
-
-    ważne = corr[parametr].drop(parametr)
-
-    for p, val in ważne.items():
-
-        if abs(val) > 0.6:
-
-            if val > 0:
-                st.write(f"✔ {parametr} rośnie razem z {p}")
-            else:
-                st.write(f"⚠️ {parametr} rośnie gdy {p} spada")
-
-    # =============================
-    # ✅ INTERPRETACJA – POPRAWIONA
-    # =============================
-
     st.subheader("🧠 Interpretacja technologiczna")
 
-    mean_val = df[parametr].mean()
+    if not data.empty:
 
-    st.write(f"Średnia wartość: {round(mean_val,2)}")
+        mean_val = data[parametr].mean()
+        std_val = data[parametr].std()
 
-    if parametr.lower() == "w":
-        st.write("➡ Wpływ na objętość i strukturę pieczywa")
+        st.write(f"Średnia: {round(mean_val,2)}, zmienność: {round(std_val,2)}")
 
-    if parametr.lower() == "p/l":
-        st.write("➡ Wpływ na rozciągliwość ciasta")
+        # OGÓLNA
+        if std_val > 0.1 * mean_val:
+            st.warning("⚠️ Wysoka zmienność → niestabilny proces")
 
-    if parametr.lower() == "skrobia uszkodzona":
-        st.write("➡ Wpływ na wodę i kleistość")
+        # KONKRETNE PARAMETRY
+        if parametr.lower() == "w":
+            if mean_val < 250:
+                st.warning("Niskie W → słaba objętość")
+            elif mean_val > 350:
+                st.info("Wysokie W → trudniejsze mieszanie / napięte ciasto")
+
+        if parametr.lower() == "p/l":
+            if mean_val > 1:
+                st.warning("Wysokie P/L → ciasto sztywne (problemy z laminacją)")
+            elif mean_val < 0.5:
+                st.warning("Niskie P/L → zbyt rozciągliwe ciasto")
+
+        if parametr.lower() == "skrobia uszkodzona":
+            if mean_val > 25:
+                st.warning("Wysoka skrobia → kleistość miękiszu i problemy z krojeniem")
+            elif mean_val < 15:
+                st.info("Niska skrobia → niższa wodochłonność")
+
+        if parametr.lower() == "białko":
+            if mean_val < 11:
+                st.warning("Niskie białko → słaba struktura glutenu")
