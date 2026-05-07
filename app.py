@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from io import BytesIO
 
 st.set_page_config(page_title="Analiza Mąki", layout="wide")
 
 st.title("📊 Monitoring jakości mąki")
 
-# ===== WCZYTANIE =====
+# ===== WCZYTANIE DANYCH =====
 file = st.file_uploader("Wgraj plik Excel", type=["xlsx"])
 
 if file:
@@ -88,21 +89,71 @@ if file:
         st.dataframe(stats)
 
     # =============================
-    # ✅ SPECYFIKACJA (NAJWAŻNIEJSZE)
+    # ✅ SPECYFIKACJA (Z WCZYTYWANIEM)
     # =============================
 
     st.subheader("⚙️ Specyfikacja dostawców")
 
+    uploaded_spec = st.file_uploader(
+        "📂 Wczytaj specyfikację (CSV lub Excel)",
+        type=["csv", "xlsx"]
+    )
+
     unique_prefix = sorted(data["PREFIX"].dropna().unique())
 
-    spec_df = pd.DataFrame({
+    default_spec = pd.DataFrame({
         "Młyn": np.repeat(unique_prefix, len(parametry)),
         "Parametr": parametry * len(unique_prefix),
         "Min": [None]*(len(unique_prefix)*len(parametry)),
         "Max": [None]*(len(unique_prefix)*len(parametry))
     })
 
+    # ===== WCZYTYWANIE =====
+
+    if uploaded_spec:
+
+        if uploaded_spec.name.endswith(".xlsx"):
+            spec_df = pd.read_excel(uploaded_spec)
+
+        else:
+            try:
+                spec_df = pd.read_csv(uploaded_spec, sep=";")
+            except:
+                spec_df = pd.read_csv(uploaded_spec, sep=",")
+
+        # czyszczenie
+        spec_df["Min"] = pd.to_numeric(spec_df["Min"], errors="coerce")
+        spec_df["Max"] = pd.to_numeric(spec_df["Max"], errors="coerce")
+
+    else:
+        spec_df = default_spec
+
     edited_spec = st.data_editor(spec_df, num_rows="dynamic")
+
+    # ===== ZAPIS =====
+
+    st.subheader("💾 Zapis specyfikacji")
+
+    col1, col2 = st.columns(2)
+
+    csv = edited_spec.to_csv(index=False).encode("utf-8")
+
+    col1.download_button(
+        label="💾 Pobierz CSV",
+        data=csv,
+        file_name="specyfikacja.csv",
+        mime="text/csv"
+    )
+
+    buffer = BytesIO()
+    edited_spec.to_excel(buffer, index=False)
+    buffer.seek(0)
+
+    col2.download_button(
+        label="💾 Pobierz Excel",
+        data=buffer,
+        file_name="specyfikacja.xlsx"
+    )
 
     # ===== WALIDACJA =====
 
@@ -162,9 +213,7 @@ if file:
         alerts = pd.concat(alerts_list)
         st.dataframe(alerts)
 
-    # =============================
-    # ✅ INTERPRETACJA (UPROSZCZONA I CZYTELNA)
-    # =============================
+    # ===== INTERPRETACJA =====
 
     st.subheader("🧠 Interpretacja technologiczna")
 
@@ -174,7 +223,7 @@ if file:
         std_val = data[parametr].std()
 
         st.write(f"Średnia: {round(mean_val,2)}")
-        st.write(f"Zmienność (STD): {round(std_val,2)}")
+        st.write(f"Zmienność: {round(std_val,2)}")
 
         if std_val > 0.1 * mean_val:
             st.warning("⚠️ Wysoka zmienność → niestabilny proces")
@@ -182,21 +231,12 @@ if file:
         if parametr.lower() == "w":
             if mean_val < 250:
                 st.warning("Niskie W → słaba objętość pieczywa")
-            elif mean_val > 350:
-                st.info("Wysokie W → mocne ciasto, trudniejsze mieszanie")
 
         if parametr.lower() == "p/l":
             if mean_val > 1:
-                st.warning("Wysokie P/L → ciasto sztywne (problemy z laminacją)")
-            elif mean_val < 0.5:
-                st.warning("Niskie P/L → ciasto zbyt rozciągliwe")
+                st.warning("Wysokie P/L → problemy z laminacją")
 
         if parametr.lower() == "skrobia uszkodzona":
             if mean_val > 25:
                 st.warning("Wysoka skrobia → kleistość miękiszu")
-            elif mean_val < 15:
-                st.info("Niska skrobia → niższa wodochłonność")
 
-        if parametr.lower() == "białko":
-            if mean_val < 11:
-                st.warning("Niskie białko → słaby gluten")
